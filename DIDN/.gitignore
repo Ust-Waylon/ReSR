@@ -1,0 +1,10 @@
+datasets
+best_model_weight
+output_log
+best_model_without_retrieval.pth
+didn_.ipynb
+didn_12_16.py
+didn_main.sh
+didn.ipynb
+latest_checkpoint_without_retrieval.pth.tar
+latest_checkpoint.pth.tar
