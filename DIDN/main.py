@@ -176,6 +176,7 @@ def main_retrieval_enhanced():
     patient_count = patient
     timestamp = time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime(time.time()))
     best_model_path = f'best_model_weight/best_model_{timestamp}.pth'
+    print(f"Best model path: {best_model_path}")
 
     for epoch in tqdm(range(args.epoch)):
         # train for one epoch

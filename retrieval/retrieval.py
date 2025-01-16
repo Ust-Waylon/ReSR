@@ -10,8 +10,9 @@ from data.dataset import read_dataset, AugmentedDataset
 from annoy import AnnoyIndex
 import random
 
-def retrieve_top_k_similar_sessions(train_set_index, dataloader, k, loader_type, folder):
+def retrieve_top_k_similar_sessions(train_embeddings, idx_session_map, dataloader, k, loader_type, folder):
     with open(f"{folder}/{loader_type}.txt", "w") as f2:
+        session_idx = 0
         for batch in tqdm.tqdm(dataloader):
             inputs, labels = batch
             inputs_gpu = torch.stack([torch.LongTensor(x) for x in inputs]).to(device)
@@ -19,16 +20,16 @@ def retrieve_top_k_similar_sessions(train_set_index, dataloader, k, loader_type,
             with torch.no_grad():
                 outputs = model(inputs_gpu)
                 session_embeddings = outputs[:, -1, :]
-                session_embeddings = session_embeddings.cpu().detach().numpy()
-            
-            topk_indices = []
-            for i in range(session_embeddings.shape[0]):
-                topk_indices.append(train_set_index.get_nns_by_vector(session_embeddings[i], k+1))
+
+                normalized_session_embeddings = session_embeddings / torch.norm(session_embeddings, dim=1, keepdim=True)
+                cosine_similarity = torch.matmul(normalized_session_embeddings, train_embeddings.transpose(0, 1))
+
+                topk_indices = (torch.topk(cosine_similarity, k+1, dim=1).indices).cpu().numpy().tolist()
             
             # get the top-k most similar session
             topk_sessions = []
-            # retrieve_same_session_count = 0
             for i in range(len(topk_indices)):
+
                 topk_session = []
                 input = inputs[i].cpu().numpy()
                 label = labels[i].cpu().numpy()
@@ -41,12 +42,13 @@ def retrieve_top_k_similar_sessions(train_set_index, dataloader, k, loader_type,
 
                 input_complete_session = np.concatenate((input, [label]))
                 topk_session.append(input_complete_session)
-
-                retrieve_same_session = False
                 
                 for j in range(len(topk_indices[i])):
-                    if (not retrieve_same_session) and j == k:
+                    if len(topk_session) == k+1:
                         break
+                    elif loader_type == "train" and topk_indices[i][j] == session_idx:
+                        continue
+                        
                     input_session, label = idx_session_map[topk_indices[i][j]]
 
                     # remove zero padding starting from the beginning
@@ -57,16 +59,14 @@ def retrieve_top_k_similar_sessions(train_set_index, dataloader, k, loader_type,
 
                     complete_session = np.concatenate((input_session, [label]))
 
-                    if not np.array_equal(input_complete_session, complete_session):
-                        topk_session.append(complete_session)
-                    else:
-                        retrieve_same_session = True
-                        # retrieve_same_session_count += 1
+                    topk_session.append(complete_session)
+                        
                 if len(topk_session) != k+1:
                     continue
                 topk_sessions.append(topk_session)
+
+                session_idx += 1
             
-            # print(retrieve_same_session_count)
                     
             # save the given session and the top-k most similar sessions pairs as
             # <given_session> \t <session1> \t <session2> \t <session3>
@@ -90,10 +90,11 @@ if __name__ == '__main__':
     hidden_dropout_prob = 0.2
     max_session_len = 19
 
-    k = 3
+    ks = [8]
 
     model = SelfAttentiveSessionEncoder(num_items=n_items, n_layers=n_layers, hidden_size=hidden_size, hidden_dropout_prob=hidden_dropout_prob, max_session_length=max_session_len)
     model.load_state_dict(torch.load(model_path))
+    model.eval()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
@@ -141,10 +142,10 @@ if __name__ == '__main__':
 
 
     # build index
-    train_set_index = AnnoyIndex(hidden_size, 'angular')
     session_idx = 0
     idx_session_map = {}
-    print("building index for train set")
+    train_embeddings = []
+    print("collecting session embeddings from train set")
     for batch in tqdm.tqdm(train_loader):
         sessions, labels = batch
         sessions = sessions.to(device)
@@ -152,23 +153,24 @@ if __name__ == '__main__':
             session_embedding = model(sessions)
             session_embedding = session_embedding[:, -1, :]
         for i, embedding in enumerate(session_embedding):
-            session_idx += 1
-            train_set_index.add_item(session_idx, embedding.cpu().numpy())
             idx_session_map[session_idx] = (sessions[i].cpu().numpy(), labels[i].cpu().numpy())
-    train_set_index.build(100)
-    train_set_index.save('train_set_index.ann')
+            train_embeddings.append(embedding.cpu().numpy())
+            session_idx += 1
+
+    train_embeddings = torch.stack([torch.tensor(embedding) for embedding in train_embeddings])
+    train_embeddings = train_embeddings.to(device)
+    # normalize embeddings
+    train_embeddings = train_embeddings / torch.norm(train_embeddings, dim=1, keepdim=True)
 
 
-    folder = dataset_path + "/retrieved_sessions" + "_" + str(k)
-    Path(folder).mkdir(parents=True, exist_ok=True)
-    train_set_index = AnnoyIndex(hidden_size, 'angular')
-    train_set_index.load('train_set_index.ann')
-
-    # retrieve top-k similar sessions for train, valid, and test sets
-    print(f"retrieving top-{k} similar sessions on train set")
-    retrieve_top_k_similar_sessions(train_set_index, train_loader, k, "train", folder)
-    print(f"retrieving top-{k} similar sessions on valid set")
-    retrieve_top_k_similar_sessions(train_set_index, valid_loader, k, "valid", folder)
-    print(f"retrieving top-{k} similar sessions on test set")
-    retrieve_top_k_similar_sessions(train_set_index, test_loader, k, "test", folder)
+    for k in ks:
+        folder = dataset_path + "/retrieved_sessions" + "_" + str(k)
+        Path(folder).mkdir(parents=True, exist_ok=True)
+        # retrieve top-k similar sessions for train, valid, and test sets
+        print(f"retrieving top-{k} similar sessions on train set")
+        retrieve_top_k_similar_sessions(train_embeddings, idx_session_map, train_loader, k, "train", folder)
+        print(f"retrieving top-{k} similar sessions on valid set")
+        retrieve_top_k_similar_sessions(train_embeddings, idx_session_map, valid_loader, k, "valid", folder)
+        print(f"retrieving top-{k} similar sessions on test set")
+        retrieve_top_k_similar_sessions(train_embeddings, idx_session_map, test_loader, k, "test", folder)
     

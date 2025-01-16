@@ -75,7 +75,7 @@ class AttentionBasedMerger(nn.Module):
         self.tau = max(self.tau * 0.995, 0.1)
         attention_probs = logit[:, :, :, :, 0]
 
-        print(attention_probs)
+        # print(attention_probs)
 
 
         # weighted sum of the values
